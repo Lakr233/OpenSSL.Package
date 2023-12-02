@@ -1,0 +1,95 @@
+name: Fetch Update and Publish Release
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "4 5 * * *"
+
+jobs:
+  fetch-and-release:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4.1.1
+
+      - name: Build If Needed
+        run: |
+            OPENSSL_TAG=$(wget -q -O- https://api.github.com/repos/openssl/openssl/releases/latest | jq -r '.tag_name')
+            echo "[*] upstream openssl tag: $OPENSSL_TAG"
+
+            # make sure tag is in format openssl-%d.%d.%d
+            if [[ ! $OPENSSL_TAG =~ ^openssl-[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "[*] invalid openssl tag, skip pipeline: $OPENSSL_TAG"
+              exit 0
+            fi
+
+            MAJOR_VERSION=$(echo $OPENSSL_TAG | cut -d'-' -f2 | cut -d'.' -f1)
+            MINOR_VERSION=$(echo $OPENSSL_TAG | cut -d'-' -f2 | cut -d'.' -f2)
+            PATCH_VERSION=$(echo $OPENSSL_TAG | cut -d'-' -f2 | cut -d'.' -f3)
+            echo "[*] tag validated, major: $MAJOR_VERSION, minor: $MINOR_VERSION, patch: $PATCH_VERSION"
+
+            if [ $MAJOR_VERSION -lt 3 ]; then
+              echo "[*] invalid openssl tag, skip pipeline: $OPENSSL_TAG, major version must be >= 3"
+              exit 0
+            fi
+
+            RELEASE_TAG="$MAJOR_VERSION.$MINOR_VERSION.$PATCH_VERSION"
+            echo "RELEASE_TAG=$RELEASE_TAG" >> $GITHUB_ENV
+            STORAGE_RELEASE_TAG="storage.$RELEASE_TAG"
+            echo "STORAGE_RELEASE_TAG=$STORAGE_RELEASE_TAG" >> $GITHUB_ENV
+
+            if git rev-parse "$STORAGE_RELEASE_TAG" >/dev/null 2>&1; then
+                echo "[*] tag $STORAGE_RELEASE_TAG already exists, exiting"
+                echo "UPDATE_NEEDED=false" >> $GITHUB_ENV
+                exit 0
+            fi
+
+            echo "UPDATE_NEEDED=true" >> $GITHUB_ENV
+
+            echo "[*] release tag: $RELEASE_TAG"
+            echo "[*] storage release tag: $STORAGE_RELEASE_TAG"
+
+            echo "[*] installing dependencies..."
+            brew install libtool autoconf automake pkgconfig coreutils bash zip swiftformat
+
+            EST_XCFRAMEWORK_DOWNLOAD_URL="https://github.com/${{ github.repository }}/releases/download/$STORAGE_RELEASE_TAG/libssl.xcframework.zip"
+            echo "[*] estimated xcframework download url: $EST_XCFRAMEWORK_DOWNLOAD_URL"
+
+            ./Script/build.sh "$OPENSSL_TAG"
+            mv ./build/libssl.xcframework.zip /tmp/libssl.xcframework.zip
+            git clean -fdx -f
+            git reset --hard
+            mv /tmp/libssl.xcframework.zip ./libssl.xcframework.zip
+            ./Script/build-manifest.sh libssl.xcframework.zip $EST_XCFRAMEWORK_DOWNLOAD_URL
+
+      - name: Commit & Push changes
+        uses: actions-js/push@master
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          tags: true
+
+      - name: Make Storage Release
+        if: env.UPDATE_NEEDED == 'true'
+        uses: softprops/action-gh-release@v0.1.15
+        with:
+          tag_name: ${{ env.STORAGE_RELEASE_TAG }}
+          body: |
+            # Updated Release
+            This release was made by automation.
+          draft: false
+          prerelease: false
+          files: |
+            libssl.xcframework.zip
+
+      - name: Make Release
+        if: env.UPDATE_NEEDED == 'true'
+        uses: softprops/action-gh-release@v0.1.15
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          body: |
+            # Package
+            This release was made by automation.
+          draft: false
+          prerelease: false
+
+
