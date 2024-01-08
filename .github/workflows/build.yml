@@ -38,6 +38,7 @@ jobs:
             STORAGE_RELEASE_TAG="storage.$RELEASE_TAG"
             echo "STORAGE_RELEASE_TAG=$STORAGE_RELEASE_TAG" >> $GITHUB_ENV
 
+            git pull --tags
             if git rev-parse "$STORAGE_RELEASE_TAG" >/dev/null 2>&1; then
                 echo "[*] tag $STORAGE_RELEASE_TAG already exists, exiting"
                 echo "UPDATE_NEEDED=false" >> $GITHUB_ENV
